@@ -24,6 +24,7 @@ globalState = require './global-state'
   getEolBufferPositionForCursor
   cursorIsOnWhiteSpace
   moveCursorToNextNonWhitespace
+  cursorIsAtEmptyRow
 } = require './utils'
 
 swrap = require './selection-wrapper'
@@ -40,6 +41,8 @@ class Motion extends Base
   constructor: ->
     super
     @initialize?()
+    @onDidSetTarget (operator) =>
+      @operator = operator
 
   isLinewise: ->
     if @isMode('visual')
@@ -87,23 +90,17 @@ class Motion extends Base
   # When 'linewise' selection, cursor is at column '0' of NEXT line, so we need to moveLeft
   # by wrapping, to put cursor on row which actually be selected(from UX point of view).
   # This adjustment is important so that j, k works without special care in moveCursor.
-  #
   selectInclusive: (selection) ->
     {cursor} = selection
     selection.modifySelection =>
       tailRange = swrap(selection).getTailBufferRange()
-
-      if @isMode('visual') and not selection.isReversed()
-        moveCursorLeft(cursor, {allowWrap: true, preserveGoalColumn: true})
-
+      @moveCursorLeft(cursor, allowWrap: true) if @isMode('visual') and (not selection.isReversed())
       @moveCursor(cursor)
-      if @isMode('visual') and cursor.isAtEndOfLine()
-        moveCursorLeft(cursor, {preserveGoalColumn: true})
-
+      # Ensure cursor is not at End of line even if visual-mode.
+      @moveCursorLeft(cursor) if @isMode('visual') and cursor.isAtEndOfLine()
       # In none-visual we don't merge tailRange into selection if no cursor movement is happened.
       if @isMode('visual') or not selection.isEmpty()
-        if not selection.isReversed() and (not cursor.isAtEndOfLine() or cursor.isAtBeginningOfLine())
-          moveCursorRight(cursor, {allowWrap: true, preserveGoalColumn: true})
+        @moveCursorRight(cursor, allowWrap: cursorIsAtEmptyRow(cursor)) unless selection.isReversed()
         newRange = selection.getBufferRange().union(tailRange)
         selection.setBufferRange(newRange, {autoscroll: false, preserveFolds: true})
 
@@ -114,19 +111,32 @@ class Motion extends Base
     _.times @getCount(), ->
       fn()
 
+  moveCursorLeft: (cursor, {allowWrap}={}) ->
+    moveCursorLeft(cursor, {allowWrap, preserveFolds: true, preserveGoalColumn: true})
+
+  moveCursorRight: (cursor, {allowWrap}={}) ->
+    moveCursorRight(cursor, {allowWrap, preserveFolds: true, preserveGoalColumn: true})
+    
   # Debuging purpose
   # -------------------------
   # [TODO] remove after dev finished
-  reportCursor: (subject, cursor) ->
-    EOL = cursor.getCurrentLineBufferRange().end
-    point = cursor.getBufferPosition()
-    console.log "#{subject}: c = #{point.toString()}, eol = #{EOL.toString()}"
+  reportSelection: (subject, selection) ->
+    console.log subject, selection.getBufferRange().toString()
 
-  withReporting: (subject, cursor, fn) ->
-    @reportCursor("#{subject}: before", cursor)
+  reportOperator: ->
+    operatorName = @operator?.constructor.name
+    targetName = @constructor.name
+    console.log "Operator = #{operatorName}, target = #{targetName}"
+
+  reportCursor: (subject, cursor) ->
+    console.log subject, cursor.getBufferPosition().toString()
+
+  withReportCursor: (cursor, fn) ->
+    cursorBefore = cursor.getBufferPosition()
     fn()
-    @reportCursor("#{subject}: after", cursor)
-    console.log '--------------------'
+    cursorAfter = cursor.getBufferPosition()
+    unless cursorBefore.isEqual(cursorAfter)
+      console.log "Changed: #{cursorBefore.toString()} -> #{cursorAfter.toString()}"
 
 # Used as operator's target in visual-mode.
 # Never be execute()ed as stand-alone motion
